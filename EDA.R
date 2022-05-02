@@ -48,3 +48,14 @@ labs(title = "Histogram of Fire Sizes",
     y = "Number of Fires"
 )
 ggplot(wildfires_clean) + geom_histogram(aes(stat_cause_descr), stat = "count")
+
+#correlation, Caution this takes long to run
+library(GGally)
+wildfires_clean %>% select(Temp_cont, Wind_cont, Hum_cont,Prec_cont, fire_size) %>% 
+  ggpairs() 
+#Compose
+wildfires_clean$Vegetation<-as.character(wildfires_clean$Vegetation)
+wildfires_clean %>% select(Vegetation, fire_size_class) %>% 
+  ggpairs()
+wildfires_clean %>% select(stat_cause_descr, fire_size_class) %>% 
+  ggpairs()
