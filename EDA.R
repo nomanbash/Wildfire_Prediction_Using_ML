@@ -2,6 +2,8 @@
 library(dplyr)
 library(ggplot2)
 library(GGally)
+library(usmap)
+library(ggmap)
 
 #loading the dataset
 wildfires <- read.csv("../FW_Veg_Rem_Combined.csv")
@@ -116,11 +118,51 @@ wildfires_clean %>%
 
 #lightning clearly burns more on average
 
-#lastly, let's see if a spatial representation yields some insights
+#checking if any noteworthy insight in vegetation and fire-size
+wildfires_clean %>%
+  ggplot(aes(Vegetation, log(fire_size))) + geom_boxplot()
 
 
+#fire size by state
+firedata <- wildfires_clean %>%
+              group_by(state) %>%
+              summarize(average_fire_size = mean(fire_size)) %>%
+              arrange(desc(average_fire_size))
+
+#fire size by state visualized
+plot_usmap(data = firedata, values = "average_fire_size", color = "red") +
+  scale_fill_continuous(low = "white", high = "red")
 
 #correlation, Caution this takes long to run
 wildfires_clean %>%
   select(Temp_cont, Wind_cont, Hum_cont, Prec_cont, fire_size) %>%
   ggpairs()
+
+
+# full lat/long map of all fires
+sbbox <- make_bbox(wildfires_clean$longitude, wildfires_clean$latitude, f = .1)
+ausbg = get_map(location = sbbox, zoom = 4,
+                source = "osm",
+                color = "color",
+                maptype = "terrain")
+
+ausbg = ggmap(ausbg)
+
+ausbg +
+  stat_density2d(data = wildfires_clean, aes(x = longitude, y=latitude, 
+                     fill = ..level..,  alpha = I(.2)),
+                 size = 1, bins = 5, geom = "polygon") +
+  geom_point(data = wildfires_clean, mapping = aes(x = longitude, y = latitude),
+             color = "red", alpha = .2, size = wildfires_clean$fire_size / 1e20) +
+  scale_fill_gradient(low = "grey50", high = "grey20") +
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.background = element_rect(fill = "aliceblue",
+                                colour = "aliceblue"),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        legend.position = "none")
