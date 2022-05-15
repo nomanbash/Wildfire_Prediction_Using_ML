@@ -1,0 +1,565 @@
+---
+title: "Wildfire Prediction using Machine Learning"
+subtitle: 'Building an Machine Learning model to predict wildfire intensity from a dataset of 50,000 wildfires in the US'
+author: "Noman Bashir, Rudrapriya Bose, Chung Hsiang Cheng, Yinyu Kao, Emile Paris"
+output: 
+  html_document: 
+    number_sections: TRUE
+    toc: true
+    code_folding: hide
+---
+
+<style>
+  body {
+    text-align: justify}
+</style>
+
+<br />  
+
+***
+
+```{r setup, include=FALSE}
+
+install.packages("pacman", repos = "http://cran.us.r-project.org")
+
+pacman::p_load(knitr, here, dplyr, GGally, ggplot2, usmap, ggmap, plotly, ggcorrplot, FactoMineR, factoextra, gridExtra, caret, rpart, fastDummies, nnet, ranger, randomForest)
+```
+
+# Data Cleaning & Exploratory Data Analysis    
+  
+<br />  
+  
+The data is coming from [kaggle](https://www.kaggle.com/) and is a random sampling of 50'000 fires coming from [this dataset](https://www.kaggle.com/datasets/rtatman/188-million-us-wildfires) It has been combined with historical weather data related to the specific location of the different fires.  
+  
+You can find the source of the data set [here](https://www.kaggle.com/datasets/capcloudcoder/us-wildfire-data-plus-other-attributes). 
+  
+<br />  
+  
+The first step is to take a look a the dataset in order to guide us for the cleaning.  
+
+```{r loading the dataset, echo=FALSE}
+
+wildfires <- read.csv(here("FW_Veg_Rem_Combined.csv"))
+
+```
+  
+Here is the structure of the dataset :    
+  
+  
+```{r display 1, echo=FALSE}
+wildfires %>%
+  str()
+```
+
+  
+Number of rows :     
+    
+```{r display 2, echo=FALSE, eval=TRUE}
+
+nrow(wildfires)
+```
+  
+<br />  
+  
+## Data Cleaning  
+
+<br />    
+  
+First, we can remove the two first columns since they are not relevant for our analysis. 
+
+```{r cleaning the data 1, eval=TRUE}
+
+wildfires <- wildfires[, -c(1, 2)]
+```
+  
+We rare getting rid of the **missing data**.
+  
+```{r cleaning the data 2, eval=TRUE}
+wildfires <- wildfires %>% filter(weather_file != "File Not Found")
+```
+  
+For better visualization and data handling we are switching the time columns to **POSIXct**. 
+  
+```{r cleaning the data 3, results='hide', eval=TRUE}
+wildfires <- wildfires %>%
+  mutate(
+    discovery_date =
+      as.POSIXct(disc_clean_date, format = "%m/%d/%Y")
+  )
+wildfires$discovery_date
+wildfires <- wildfires %>%
+  mutate(
+    discovery_time =
+      as.POSIXct(disc_date_final, format = "%m/%d/%Y %H:%M")
+  )
+wildfires$discovery_time
+wildfires <- wildfires %>%
+  mutate(
+    contained_time =
+      as.POSIXct(cont_date_final, format = "%m/%d/%Y %H:%M")
+  )
+wildfires$contained_time
+
+wildfires$putout_time <-
+  difftime(wildfires$contained_time, wildfires$discovery_time, units = "mins")
+wildfires$putout_time
+```
+  
+we've now cleaned most of the data. While exploring it, we can observe that we don't need *disc_clean_date*, *disc_date_final*, *cont_date_final*, *cont_clean_date*, *disc_date_pre*, *disc_pre_year* and *disc_pre_month* variables. And also the *wstation_usaf*, *wstation_byear*,*wstation_eyear* and *wstation_wban* since these are identifiers. 
+  
+```{r cleaning the data 4, eval=TRUE}
+wildfires_clean <- wildfires %>%
+  select(-c(
+    "disc_clean_date", "disc_date_final", "cont_date_final",
+    "cont_clean_date", "disc_date_pre", "disc_pre_year", "disc_pre_month",
+    "weather_file", "fire_mag", "wstation_usaf", "wstation_byear",
+    "wstation_eyear", "wstation_wban"
+  ))
+```
+
+  
+  
+Here's the structure of the dataset after this first part of cleaning :  
+
+  
+```{r display of the cleaning 1, echo=FALSE, eval=TRUE}
+str(wildfires_clean)
+```
+  
+Number of rows :      
+    
+```{r display of the cleaning 2, echo=FALSE, eval=TRUE}
+nrow(wildfires_clean)
+```
+  
+<br />  
+  
+## Exploratory Data Analysis  
+
+<br />  
+
+```{r plot 1, echo=FALSE, eval=TRUE}
+
+wildfires_clean %>%
+  group_by(stat_cause_descr) %>%
+  summarize(count = n()) %>%
+  ggplot(aes(x = reorder(stat_cause_descr, (count)), y = count)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Causes of Fire", y = "Number of Fires", x = "Cause") +
+  geom_label(aes(label = count))
+```
+  
+we can see that that there"s a lot of missing or undefined values. So, we should remove them   
+  
+```{r cleaning the data 5, eval=TRUE}
+
+wildfires_clean <- wildfires_clean %>%
+  filter(stat_cause_descr != "Missing/Undefined")
+```
+
+<br />  
+
+
+There's also only 58 "*Structure*" and 175 "*Fireworks*". Maybe we should consider adding these to "*Misc*", but let's see if they are overrepresented in one single class type first. 
+  
+which cause is predominant in each class? 
+
+```{r plot 2, echo=FALSE, eval=TRUE}
+ggplot(wildfires_clean, aes(x = fire_size_class, fill = stat_cause_descr)) +
+  geom_bar(position = "fill", stat = "count") +
+  geom_label(aes(label = ..count..), stat = "count", position = "fill")
+wildfires_clean %>%
+  count(fire_size_class, stat_cause_descr) %>%
+  kable()
+```
+
+  
+*fireworks* and *structure* clearly are not overrepresented anywhere. This means they can be added to *misc* category
+
+```{r cleaning the data 6, eval=TRUE}
+wildfires_clean["stat_cause_descr"][wildfires_clean["stat_cause_descr"] == "Fireworks" | wildfires_clean["stat_cause_descr"] == "Structure"] <- "Miscellaneous"
+```
+  
+<br />  
+
+  
+let's plot the count of wildfires over months :   
+
+```{r plot 3, echo=FALSE, eval=TRUE}
+wildfires_clean %>%
+  mutate(Month = factor(discovery_month, levels = month.abb)) %>%
+  ggplot() +
+  geom_bar(aes(Month, ..count..), stat = "count")
+```
+  
+  
+<br />  
+
+  
+Now, we are going to look at:  
+
+* **wildfire size**  
+
+```{r plot 4, echo=FALSE, message=FALSE, warning=FALSE, eval=TRUE}
+wildfires_clean %>%
+  ggplot() +
+  geom_histogram(aes(log(fire_size)))
+```
+ 
+***  
+  
+* **duration** (or putout time)  
+
+```{r plot 5, echo=FALSE, message=FALSE, warning=FALSE, eval=TRUE}
+wildfires_clean %>%
+  ggplot() +
+  geom_histogram(aes(log(as.numeric(putout_time))), na.rm = TRUE)
+```
+  
+***  
+  
+* boxplots of **fires per month**  
+
+```{r plot 6, echo=FALSE, message=FALSE, warning=FALSE, eval=TRUE}
+wildfires_clean %>%
+  mutate(Month = factor(discovery_month, levels = month.abb)) %>%
+  group_by(Month, format(discovery_date, format = "%Y")) %>%
+  summarize(fires = n()) %>%
+  ggplot() +
+  geom_boxplot(aes(x = Month, y = fires)) +
+  scale_y_continuous(labels = scales::comma)
+```
+
+Let's see if cause has any correlation with area burnt  
+  
+
+```{r plot 7, echo=FALSE, message=FALSE, warning=FALSE, eval=TRUE}
+wildfires_clean %>%
+  ggplot() +
+  geom_boxplot(aes(stat_cause_descr, log(fire_size))) +
+  coord_flip()
+```
+  
+*lightning* clearly burns more on average  
+
+***    
+  
+* checking if there is any noteworthy insight in **vegetation** and **fire-size**  
+
+```{r plot 8, echo=FALSE, message=FALSE, warning=FALSE, eval=TRUE}
+wildfires_clean %>%
+  ggplot(aes(Vegetation, log(fire_size))) +
+  geom_boxplot()
+```  
+  
+```{r wrangling 1, echo=FALSE, message=FALSE, warning=FALSE, eval=TRUE}
+firedata <- wildfires_clean %>%
+  group_by(state) %>%
+  summarize(average_fire_size = mean(fire_size)) %>%
+  arrange(desc(average_fire_size))
+```
+
+```{r plot 9, echo=FALSE, message=FALSE, warning=FALSE, eval=TRUE}
+plot_usmap(data = firedata, values = "average_fire_size", color = "red") +
+  scale_fill_continuous(low = "white", high = "red")
+
+wildfires_clean %>%
+  select(Temp_cont, Wind_cont, Hum_cont, Prec_cont, fire_size) %>%
+  ggpairs()
+```
+  
+  
+***    
+  
+* The **full map** of all fires    
+  
+```{r plot 10, echo=FALSE, warning=FALSE, message=FALSE, eval=TRUE}
+sbbox <- make_bbox(wildfires_clean$longitude, wildfires_clean$latitude, f = .1)
+ausbg <- get_map(
+  location = sbbox, zoom = 4,
+  source = "osm",
+  color = "color",
+  maptype = "terrain"
+)
+
+ausbg <- ggmap(ausbg)
+
+ausbg +
+  stat_density2d(
+    data = wildfires_clean, aes(
+      x = longitude, y = latitude,
+      fill = ..level.., alpha = I(.2)
+    ),
+    size = 1, bins = 5, geom = "polygon"
+  ) +
+  geom_point(
+    data = wildfires_clean, mapping = aes(x = longitude, y = latitude),
+    color = "red", alpha = .2, size = wildfires_clean$fire_size / 1e20
+  ) +
+  scale_fill_gradient(low = "grey50", high = "grey20") +
+  theme(
+    axis.line = element_blank(),
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.background = element_rect(
+      fill = "aliceblue",
+      colour = "aliceblue"
+    ),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "none"
+  )
+```
+  
+***  
+<br />  
+  
+# Classification    
+  
+<br />   
+  
+Now that we've done a basic analysis of the data, let's move onto our classification task: **predicting the class of a fire**. To remind ourselves that this is an unbalanced subset, let's take a quick look at the spread of classes in our set.  
+
+
+
+
+```{r analysis, eval=TRUE, echo=FALSE }
+colnames(wildfires_clean)
+
+wildfires_clean %>% ggplot(aes(fire_size_class)) +
+  geom_bar() +
+  geom_text(stat = "count", aes(label = ..count..), hjust = -0.5) +
+  coord_flip()
+```
+
+We can see that there is a clear mismatch in classes. There are two options, **subsampling** and **resampling**. Since there's a lot of data available, we will subsample to go down to 467  
+  
+<br />  
+  
+## subsample    
+  
+<br />    
+  
+we don't need a lot of the columns in *wildfires_clean* when doing classification, so we will remove them, and mutate some columns as well  
+
+```{r cleaning and wrangling, eval=TRUE}
+wildfires_classification <- wildfires_clean %>% select(!c(fire_name, fire_size, latitude, longitude, putout_time, discovery_time, discovery_date, contained_time))
+```
+  
+There are a lot of features that may be correlated (such as temperature across days).We will try and reduce dimensions by using **PCA** to select only the most valuable features.  
+  
+  
+```{r colnames 1, echo=FALSE}
+colnames(wildfires_classification)
+
+```
+
+```{r corr plot, echo=FALSE}
+wildfires_scaled <- scale(wildfires_classification[, -c(1:4)])
+ggcorrplot(cor(wildfires_scaled[, -c(1:4)]))
+```
+  
+There's a fair bit of correlation between the temperature indicators, it might be worthwhile to remove them 
+
+  
+<br />   
+  
+  
+```{r PCA, echo=FALSE}
+
+wildfires.pca <- PCA(wildfires_scaled[, -c(1:4)], ncp = 18, graph = TRUE)
+fviz_contrib(wildfires.pca, choice = "var", axes = 1)
+
+fviz_pca_biplot(wildfires.pca,
+  col.ind = factor(wildfires_classification$fire_size_class)
+)
+```
+  
+    
+<br />   
+  
+
+from the plot, we can see *wind_pre_15*, *hum_pre_7* and *temp_cont* are better predictors. We can remove the other variables of temperature for ease of statistical techniques   
+```{r remove temp, echo=FALSE}
+wildfires_final <- wildfires_classification[, -c(7, 8, 9, 11, 13, 14, 15, 16, 18, 19, 20, 21)]
+colnames(wildfires_final)
+```
+  
+<br />    
+  
+Now let's divide into training and test sets and subsample
+  
+
+```{r training and test sets}
+index.tr <- createDataPartition(y = wildfires_final$fire_size_class, p = 0.8, list = FALSE)
+data.tr <- wildfires_final[index.tr, ]
+data.te <- wildfires_final[-index.tr, ]
+```
+  
+ 
+
+
+```{r subsampled}
+classBs <- data.tr %>% filter(fire_size_class == "B")
+classCs <- data.tr %>% filter(fire_size_class == "C")
+classDs <- data.tr %>% filter(fire_size_class == "D")
+classEs <- data.tr %>% filter(fire_size_class == "E")
+classFs <- data.tr %>% filter(fire_size_class == "F")
+classGs <- data.tr %>% filter(fire_size_class == "G")
+
+rows <- c(nrow(classBs), nrow(classCs), nrow(classDs), nrow(classEs), nrow(classFs), nrow(classGs))
+minrows <- min(rows)
+
+indexB <- sample(nrow(classBs), size = minrows, replace = FALSE)
+indexC <- sample(nrow(classCs), size = minrows, replace = FALSE)
+indexD <- sample(nrow(classDs), size = minrows, replace = FALSE)
+indexF <- sample(nrow(classEs), size = minrows, replace = FALSE)
+indexG <- sample(nrow(classFs), size = minrows, replace = FALSE)
+
+subsampled <- data.frame(rbind(classEs, classBs[indexB, ], classCs[indexC, ], classDs[indexD, ], classFs[indexF, ], classGs[indexG, ]))
+
+```
+  
+Now we've subsampled the data, it's time to choose our models and train the dataset.From the outset, we can remove Naive Bayes from our models because we know the variables are not independent (especially the weather ones). Logistic regression also can only be used only with two classes, for multi-class, it requires too much work. We can try four models: KNN, CART (which is too long so we will use random forest), Neural Network, and SVM.   
+Let's start with KNN  
+    
+<br />      
+  
+## KNN   
+  
+<br />    
+  
+To use knn, we need to create **dummy variables** for state, vegetation and month. 
+
+```{r dummy}
+y <- wildfires_final$fire_size_class
+wildfires_final.comp <- wildfires_final %>% select(!fire_size_class)
+wildfires_final.num <- wildfires_final.comp %>%
+  select(where(is.numeric)) %>%
+  scale() %>%
+  as.data.frame()
+
+wildfires_final.dumm <- wildfires_final.comp %>%
+  select(!where(is.numeric)) %>%
+  dummy_cols(remove_first_dummy = FALSE, remove_selected_columns = TRUE)
+wildfires_final.dat <- data.frame(wildfires_final.num, wildfires_final.dumm)
+wildfires_final.dat$fire_size_class <- y
+```
+  
+Then we recreate a subsampling for the KNN method  
+  
+  
+```{r}
+index.tr.knn <- createDataPartition(y = wildfires_final.dat$fire_size_class, p = 0.8, list = FALSE)
+data.tr.knn <- wildfires_final.dat[index.tr.knn, ]
+data.te.knn <- wildfires_final.dat[-index.tr.knn, ]
+```
+  
+
+Now, we will subsample for this dummy version  
+```{r}
+classBs.knn <- data.tr.knn %>% filter(fire_size_class == "B")
+classCs.knn <- data.tr.knn %>% filter(fire_size_class == "C")
+classDs.knn <- data.tr.knn %>% filter(fire_size_class == "D")
+classEs.knn <- data.tr.knn %>% filter(fire_size_class == "E")
+classFs.knn <- data.tr.knn %>% filter(fire_size_class == "F")
+classGs.knn <- data.tr.knn %>% filter(fire_size_class == "G")
+
+rows.knn <- c(nrow(classBs.knn), nrow(classCs.knn), nrow(classDs.knn), nrow(classEs.knn), nrow(classFs.knn), nrow(classGs.knn))
+minrows.knn <- min(rows.knn)
+
+indexB.knn <- sample(nrow(classBs.knn), size = minrows, replace = FALSE)
+indexC.knn <- sample(nrow(classCs.knn), size = minrows, replace = FALSE)
+indexD.knn <- sample(nrow(classDs.knn), size = minrows, replace = FALSE)
+indexF.knn <- sample(nrow(classEs.knn), size = minrows, replace = FALSE)
+indexG.knn <- sample(nrow(classFs.knn), size = minrows, replace = FALSE)
+
+subsampled.knn <- data.frame(rbind(classEs.knn, classBs.knn[indexB.knn, ], classCs.knn[indexC.knn, ], classDs.knn[indexD.knn, ], classFs.knn[indexF.knn, ], classGs.knn[indexG.knn, ]))
+```
+<br />    
+
+Let's run the model :  
+
+```{r knn run}
+
+mod.knn <- knn3(data = subsampled.knn, fire_size_class ~ ., k = 4)
+predict.knn <- predict(mod.knn, newdata = data.te.knn, type = "prob")
+fire_size_pred.knn <- colnames(predict.knn)[max.col(predict.knn, ties.method = "random")]
+
+confusionMatrix(as.factor(fire_size_pred.knn), as.factor(data.te.knn$fire_size_class))
+```
+  
+It is a pretty poor accuracy. We can notice that **specificity** is high (i.e. negatives are detected well but sensitivity is low). So, it is time to train using CV.
+
+```{r CV train}
+trctrl <- trainControl(method = "cv", number = 10)
+trgrid <- expand.grid(k = seq(from = 1, to = 15, by = 1))
+
+mod.knn.cv <- train(fire_size_class ~ ., data = subsampled.knn, method = "knn", metric = "Accuracy", tuneGrid = trgrid, trControl = trctrl)
+
+final.knn <- knn3(data = subsampled.knn, fire_size_class ~ ., k = mod.knn.cv$bestTune)
+final.predict.knn <- predict(final.knn, newdata = data.te.knn, type = "prob")
+fire_size_pred.knn <- colnames(final.predict.knn)[max.col(predict.knn, ties.method = "random")]
+
+confusionMatrix(as.factor(fire_size_pred.knn), as.factor(data.te.knn$fire_size_class))
+```
+  
+The accuracy is still low, it is time to try other models.   
+  
+<br />      
+  
+## Neural Networks  
+  
+<br />      
+  
+After KNN the next model is the neural network. Let's run the model and analyse the outcome :    
+
+```{r train, include=FALSE}
+trctrl <- trainControl(method = "cv", number = 10)
+trgrid <- expand.grid(
+  size = seq(from = 1, to = 10, by = 1),
+  decay = seq(from = 0.1, to = 0.5, by = 0.1)
+)
+
+mod.nnet <- train(fire_size_class ~ ., data = subsampled.knn, method = "nnet", metric = "Accuracy", tuneGrud = trgrid, trControl = trctrl)
+
+```
+
+```{r confusion matric NN, echo=FALSE}
+mod.nnet.final <- nnet(as.factor(fire_size_class) ~ ., data = subsampled.knn, size = c(3, 2), decay = 0.1)
+predict.nnet <- predict(mod.nnet, newdata = data.te.knn)
+confusionMatrix(as.factor(predict.nnet), as.factor(data.te$fire_size_class))
+```
+
+
+In this case also the result is a **low accuracy**. It clearly means that neural networks are not very good at predicting  
+  
+<br />   
+  
+  
+## Random Forests  
+  
+<br />   
+  
+  
+  
+```{r random forest}
+mod.rf <- randomForest::randomForest(as.factor(fire_size_class) ~ ., data = subsampled.knn, ntree = 1000, importance = TRUE)
+pred.rf <- predict(mod.rf, newdata = data.te.knn)
+
+```
+
+```{r confusion matrix random forest }
+confusionMatrix(as.factor(pred.rf), as.factor(data.te$fire_size_class))
+```
+  
+We can observe better results but still not good enough.  
+  
+<br />   
+  
+> In short, we can conclude that alone, temperature, vegetation, remoteness and state are not good enough for a triage.
+We need more data to fit the model better. Some surprising learnings : vegetation does not seem to matter for fire_size_class prediction temperature in the past 30 days and precipitation also don't have an impact. Iesearch indicates that droughts are the biggest predictors so instead of precipitation in the last 30, maybe we need to go further backwards
