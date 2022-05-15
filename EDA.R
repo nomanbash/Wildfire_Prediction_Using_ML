@@ -166,3 +166,173 @@ ausbg +
         panel.grid.major = element_blank(), 
         panel.grid.minor = element_blank(),
         legend.position = "none")
+
+
+#now that we've done a basic analysis of the data, let's move onto our classification task: predicitng the class of a fire:
+#to remind ourselves that this is an unbalanced subset, let's take a quick look at the spread of classes in our set
+
+colnames(wildfires_clean)
+
+wildfires_clean %>% ggplot(aes(fire_size_class)) + geom_bar() + geom_text(stat = 'count', aes(label = ..count..), hjust = -0.5) + coord_flip()
+
+#we can see that there is a clear mismatch in classes. There are two options, subsampling and resampling. Since there's a lot of data available, we will subsample to go down to 467
+#we don't need a lot of the columns in wildfires_clean when doing classification, so we will remove them, and mutate some columns as well
+
+wildfires_classification <- wildfires_clean %>% select(!c(fire_name, fire_size, latitude, longitude, putout_time, discovery_time, discovery_date, contained_time))
+
+#there are a lot of features that may be correlated (such as temperature across days, we will try and reduce dimensions by using PCA to select only the most valuable features)
+
+library(ggcorrplot)
+library(FactoMineR)
+library(factoextra)
+library(gridExtra)
+
+colnames(wildfires_classification)
+wildfires_classification$Vegetation <- as.factor(wildfires_classification$Vegetation)
+wildfires_scaled <- scale(wildfires_classification[,-c(1:4)])
+ggcorrplot(cor(wildfires_scaled[,-c(1:4)]))
+#there's a fair bit of correlation between the temperature indicators, it might be worthwhile to remove them
+
+wildfires.pca <- PCA(wildfires_scaled[,-c(1:4)], ncp = 18, graph = TRUE)
+fviz_contrib(wildfires.pca, choice = "var", axes = 1)
+
+fviz_pca_biplot(wildfires.pca,
+                col.ind = factor(wildfires_classification$fire_size_class))
+
+#from the plot, we can see wind_pre_15, hum_pre_7 and temp_cont are better predictors. We can remove the other temp variables for ease of statistical techniques
+
+wildfires_final <- wildfires_classification[,-c(7,8,9,11,13,14,15,16,18,19,20,21)]
+colnames(wildfires_final)
+
+
+#dividing into training and test sets
+library(caret)
+library(rpart)
+
+index.tr <- createDataPartition(y = wildfires_final$fire_size_class, p = 0.8, list = FALSE)
+data.tr <- wildfires_final[index.tr,]
+data.te <- wildfires_final[-index.tr,]
+
+#now, we will subsample
+
+classBs <- data.tr %>% filter(fire_size_class == "B")
+classCs <- data.tr %>% filter(fire_size_class == "C")
+classDs <- data.tr %>% filter(fire_size_class == "D")
+classEs <- data.tr %>% filter(fire_size_class == "E")
+classFs <- data.tr %>% filter(fire_size_class == "F")
+classGs <- data.tr %>% filter(fire_size_class == "G")
+
+rows <- c(nrow(classBs), nrow(classCs), nrow(classDs), nrow(classEs), nrow(classFs), nrow(classGs))
+minrows <- min(rows)
+
+indexB = sample(nrow(classBs), size = minrows, replace = FALSE)
+indexC = sample(nrow(classCs), size = minrows, replace = FALSE)
+indexD = sample(nrow(classDs), size = minrows, replace = FALSE)
+indexF = sample(nrow(classEs), size = minrows, replace = FALSE)
+indexG = sample(nrow(classFs), size = minrows, replace = FALSE)
+
+subsampled <- data.frame(rbind(classEs, classBs[indexB,], classCs[indexC,], classDs[indexD,], classFs[indexF,], classGs[indexG,]))
+
+colnames(subsampled)
+
+#now we've subsampled the data, it's time to choose our models and train the dataset.
+#from the outset, we can remove Naive Bayes from our models because we know the variables are not independent (especially the weather ones)
+#logistic regression also can only be used only with two classes, for multi-class, it requires a bit too much work
+#we can try four models: KNN, CART (takes too long so we'll use random forest), Neural Net, and SVM. Let's start with KNN
+
+#KNN
+
+#to use knn, we need to create dummy variables for state, vegetation and month
+
+y <- wildfires_final$fire_size_class
+wildfires_final.comp <- wildfires_final %>% select(!fire_size_class)
+wildfires_final.num <- wildfires_final.comp %>% select(where(is.numeric)) %>% scale() %>% as.data.frame()
+
+library(fastDummies)
+
+wildfires_final.dumm <- wildfires_final.comp %>% select(!where(is.numeric)) %>% 
+  dummy_cols(remove_first_dummy = FALSE, remove_selected_columns = TRUE)
+wildfires_final.dat <- data.frame(wildfires_final.num, wildfires_final.dumm)
+wildfires_final.dat$fire_size_class <- y
+
+#recreate subsampling for KNN
+
+index.tr.knn <- createDataPartition(y = wildfires_final.dat$fire_size_class, p = 0.8, list = FALSE)
+data.tr.knn <- wildfires_final.dat[index.tr.knn,]
+data.te.knn <- wildfires_final.dat[-index.tr.knn,]
+
+#now, we will subsample for this dummy version
+
+classBs.knn <- data.tr.knn %>% filter(fire_size_class == "B")
+classCs.knn <- data.tr.knn %>% filter(fire_size_class == "C")
+classDs.knn <- data.tr.knn %>% filter(fire_size_class == "D")
+classEs.knn <- data.tr.knn %>% filter(fire_size_class == "E")
+classFs.knn <- data.tr.knn %>% filter(fire_size_class == "F")
+classGs.knn <- data.tr.knn %>% filter(fire_size_class == "G")
+
+rows.knn <- c(nrow(classBs.knn), nrow(classCs.knn), nrow(classDs.knn), nrow(classEs.knn), nrow(classFs.knn), nrow(classGs.knn))
+minrows.knn <- min(rows.knn)
+
+indexB.knn = sample(nrow(classBs.knn), size = minrows, replace = FALSE)
+indexC.knn = sample(nrow(classCs.knn), size = minrows, replace = FALSE)
+indexD.knn = sample(nrow(classDs.knn), size = minrows, replace = FALSE)
+indexF.knn = sample(nrow(classEs.knn), size = minrows, replace = FALSE)
+indexG.knn = sample(nrow(classFs.knn), size = minrows, replace = FALSE)
+
+subsampled.knn <- data.frame(rbind(classEs.knn, classBs.knn[indexB.knn,], classCs.knn[indexC.knn,], classDs.knn[indexD.knn,], classFs.knn[indexF.knn,], classGs.knn[indexG.knn,]))
+
+mod.knn <- knn3(data = subsampled.knn, fire_size_class ~ ., k = 4)
+predict.knn <- predict(mod.knn, newdata = data.te.knn, type = "prob")
+fire_size_pred.knn <- colnames(predict.knn)[max.col(predict.knn,ties.method="random")]
+
+confusionMatrix(as.factor(fire_size_pred.knn), as.factor(data.te.knn$fire_size_class))
+
+
+#that's a pretty poor accuracy. I notice that specificity is high (i.e. negatives are detected well but sensitivity is low)
+#It's time to train using CV
+
+trctrl <- trainControl(method = "cv", number = 10)
+trgrid <- expand.grid(k = seq(from = 1, to = 15, by = 1))
+
+mod.knn.cv <- train(fire_size_class ~ ., data = subsampled.knn, method = 'knn', metric = 'Accuracy', tuneGrid = trgrid, trControl = trctrl)
+
+final.knn <- knn3(data = subsampled.knn, fire_size_class ~ ., k = mod.knn.cv$bestTune)
+final.predict.knn <- predict(final.knn, newdata = data.te.knn, type = "prob")
+fire_size_pred.knn <- colnames(final.predict.knn)[max.col(predict.knn,ties.method="random")]
+
+confusionMatrix(as.factor(fire_size_pred.knn), as.factor(data.te.knn$fire_size_class))
+
+#Pretty low accuracy. Unimpressive. Let's try other models
+
+library(nnet)
+
+trctrl <- trainControl(method = 'cv', number = 10)
+trgrid <- expand.grid(size = seq(from = 1, to = 10, by = 1),
+                      decay = seq(from = 0.1, to = 0.5, by = 0.1))
+
+mod.nnet <- train(fire_size_class ~ ., data = subsampled.knn, method = 'nnet', metric = "Accuracy", tuneGrud = trgrid, trControl = trctrl)
+
+mod.nnet.final <- nnet(fire_size_class ~ ., data = subsampled.knn, size = c(3,2), decay = 0.1)
+predict.nnet <- predict(mod.nnet, newdata = data.te.knn)
+
+confusionMatrix(as.factor(predict.nnet), as.factor(data.te$fire_size_class))
+
+#also low accuracy. It clearly means that nnets aren't very good at predicting
+
+#we can now try either random forests or SVM. Since traditional methods aren't working, perhaps accuracy can be improved by random forests
+
+library(ranger)
+
+mod.rf <- randomForest::randomForest(as.factor(fire_size_class) ~ ., data = subsampled.knn, ntree = 1000, importance = TRUE)
+pred.rf <- predict(mod.rf, newdata = data.te.knn)
+
+pred.rf
+
+confusionMatrix(as.factor(pred.rf), as.factor(data.te$fire_size_class))
+
+#fairly decent, not good enough
+
+#in short, we can conclude that alone, temperature, vegetation, remoteness and state are not good enough for a triage.
+#We need more data to fit the model better. Some surprising learnings : vegetation does not seem to matter for fire_size_class prediction
+#temperature in the past 30 days and precipitation also don't have an impact.
+#research indicates that droughts are the biggest predictors so instead of precipitation in the last 30, maybe we need to go further backwards
