@@ -161,7 +161,7 @@ wildfires.pca <- PCA(wildfires_scaled, ncp = 19, graph = TRUE)
 fviz_contrib(wildfires.pca, choice = "var", axes = 1)
 
 fviz_pca_biplot(wildfires.pca,
-                col.ind = factor(wildfires_classification$fire_size_class))
+                col.ind = factor(wildfires_regression$fire_size))
 
 #from the plot, we can see wind_pre_15, hum_pre_7 and temp_pre_7(only change from classification)and 
 #Prec_cont
