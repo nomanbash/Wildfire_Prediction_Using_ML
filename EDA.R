@@ -189,8 +189,8 @@ library(gridExtra)
 
 colnames(wildfires_classification)
 wildfires_classification$Vegetation <- as.factor(wildfires_classification$Vegetation)
-wildfires_scaled <- scale(wildfires_classification[,-c(1:4)])
-ggcorrplot(cor(wildfires_scaled[,-c(1:4)]))
+wildfires_scaled <- scale(wildfires_classification[,-c(1:4,6)])
+ggcorrplot(cor(wildfires_scaled[,-c(1:4,6)]))
 #there's a fair bit of correlation between the temperature indicators, it might be worthwhile to remove them
 
 wildfires.pca <- PCA(wildfires_scaled[,-c(1:4)], ncp = 18, graph = TRUE)
@@ -273,11 +273,11 @@ classGs.knn <- data.tr.knn %>% filter(fire_size_class == "G")
 rows.knn <- c(nrow(classBs.knn), nrow(classCs.knn), nrow(classDs.knn), nrow(classEs.knn), nrow(classFs.knn), nrow(classGs.knn))
 minrows.knn <- min(rows.knn)
 
-indexB.knn = sample(nrow(classBs.knn), size = minrows, replace = FALSE)
-indexC.knn = sample(nrow(classCs.knn), size = minrows, replace = FALSE)
-indexD.knn = sample(nrow(classDs.knn), size = minrows, replace = FALSE)
-indexF.knn = sample(nrow(classEs.knn), size = minrows, replace = FALSE)
-indexG.knn = sample(nrow(classFs.knn), size = minrows, replace = FALSE)
+indexB.knn = sample(nrow(classBs.knn), size = minrows.knn, replace = FALSE)
+indexC.knn = sample(nrow(classCs.knn), size = minrows.knn, replace = FALSE)
+indexD.knn = sample(nrow(classDs.knn), size = minrows.knn, replace = FALSE)
+indexF.knn = sample(nrow(classFs.knn), size = minrows.knn, replace = FALSE)
+indexG.knn = sample(nrow(classGs.knn), size = minrows.knn, replace = FALSE)
 
 subsampled.knn <- data.frame(rbind(classEs.knn, classBs.knn[indexB.knn,], classCs.knn[indexC.knn,], classDs.knn[indexD.knn,], classFs.knn[indexF.knn,], classGs.knn[indexG.knn,]))
 
@@ -312,7 +312,7 @@ trgrid <- expand.grid(size = seq(from = 1, to = 10, by = 1),
 
 mod.nnet <- train(fire_size_class ~ ., data = subsampled.knn, method = 'nnet', metric = "Accuracy", tuneGrud = trgrid, trControl = trctrl)
 
-mod.nnet.final <- nnet(fire_size_class ~ ., data = subsampled.knn, size = c(3,2), decay = 0.1)
+#mod.nnet.final <- nnet(fire_size_class ~ ., data = subsampled.knn, size = c(3,2), decay = 0.1)
 predict.nnet <- predict(mod.nnet, newdata = data.te.knn)
 
 confusionMatrix(as.factor(predict.nnet), as.factor(data.te$fire_size_class))
@@ -330,9 +330,70 @@ pred.rf
 
 confusionMatrix(as.factor(pred.rf), as.factor(data.te$fire_size_class))
 
+#Variable importance
+varImpPlot(mod.rf)
+importance(mod.rf)
+
 #fairly decent, not good enough
 
 #in short, we can conclude that alone, temperature, vegetation, remoteness and state are not good enough for a triage.
 #We need more data to fit the model better. Some surprising learnings : vegetation does not seem to matter for fire_size_class prediction
 #temperature in the past 30 days and precipitation also don't have an impact.
 #research indicates that droughts are the biggest predictors so instead of precipitation in the last 30, maybe we need to go further backwards
+
+
+#Hierarchical clustering
+#Distances
+library(reshape2) # contains the melt function
+row.names(subsampled.knn) <- paste("W", c(1:nrow(subsampled.knn)), sep="") # row names are used after
+fire.d <- dist(subsampled.knn[,-90], method = "manhattan") # matrix of Manhattan distances 
+
+##Choice of the number of clusters
+library(factoextra)
+fviz_nbclust(subsampled.knn[,-90],
+             hcut, hc_method="complete",
+             hc_metric="manhattan",
+             method = "wss", 
+             k.max = 25, verbose = FALSE)
+# 6 is the elbow
+
+fviz_nbclust(subsampled.knn[,-90],
+             hcut, hc_method="complete",
+             hc_metric="manhattan",
+             method = "silhouette", 
+             k.max = 25, verbose = FALSE)
+#2 is good here
+
+#this takes too long to run
+#fviz_nbclust(subsampled.knn[,-90],
+#             hcut, hc_method="complete",
+#             hc_metric="manhattan",
+#             method = "gap", 
+#             k.max = 25, verbose = FALSE)
+
+#Dendrogram
+
+fire.hc <- hclust(fire.d, method = "complete")
+plot(fire.hc, hang=-1)
+
+rect.hclust(fire.hc, k=6)
+fire.clust <- cutree(fire.hc, k=6)
+fire.clust
+
+#Interpretation of the clusters
+
+fire.comp <- data.frame(subsampled.knn[,-90], Clust=factor(fire.clust), Id=row.names(subsampled.knn))
+fire.comp2 <- data.frame(subsampled.knn, Clust=factor(fire.clust), Id=row.names(subsampled.knn))
+fire.df <- melt(fire.comp, id=c("Id", "Clust"))
+head(fire.df)
+
+ggplot(fire.df, aes(y=value, group=Clust, fill=Clust)) +
+  geom_boxplot() +
+  facet_wrap(~variable, ncol=10, nrow=10)
+
+#PAM and silhouette plot
+library(cluster)
+fire.pam <- pam(subsampled.knn[,-90], k=6)
+fire.pam
+
+plot(silhouette(fire.pam))
