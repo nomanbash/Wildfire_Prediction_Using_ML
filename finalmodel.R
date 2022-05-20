@@ -11,6 +11,8 @@ library(caret)
 library(nnet)
 library(randomForest)
 library(forcats)
+library(DALEX)
+
 
 
 #loading the dataset
@@ -204,6 +206,11 @@ wildfires_clean %>%
   select(Temp_cont, Wind_cont, Hum_cont, Prec_cont, FireSize) %>%
   ggpairs()
 
+
+colnames(wildfires_classification)
+wildfires_scaled <- scale(wildfires_classification[,-c(1:4, 6)])
+ggcorrplot(cor(wildfires_scaled[,-c(1:4, 6)]))
+
 wildfires_clean %>%
   ggplot() +
     geom_density(aes(x = Temp_pre_30), color = "red") +
@@ -211,6 +218,20 @@ wildfires_clean %>%
     geom_density(aes(x = Temp_pre_7), col = "green") +
     geom_density(aes(x = Temp_cont), col = "orange") +
     labs(title = "Comparison of Temperature Values", x = "Temp")
+
+
+wildfires_clean %>%
+  ggplot() +
+    geom_density(aes(x = Wind_pre_30), color = "red") +
+    geom_density(aes(x = Wind_pre_15), col = "blue") +
+    geom_density(aes(x = Wind_pre_7), col = "green") +
+    geom_density(aes(x = Wind_cont), col = "orange") +
+    labs(title = "Comparison of Wind Values", x = "Wind")
+
+wildfires_clean %>%
+  ggplot()
+    geom_point(aes(x = remoteness, y = fire_size))
+
 
 # full lat/long map of all fires
 sbbox <- make_bbox(wildfires_clean$longitude, wildfires_clean$latitude, f = .1)
@@ -242,22 +263,6 @@ ausbg +
         panel.grid.minor = element_blank(),
         legend.position = "none")
 
-
-#now that we've done a basic analysis of the data,
-#let's move onto our classification task: predicitng the class of a fire:
-#to remind ourselves that this is an unbalanced subset
-#let's take a quick look at the spread of classes in our set
-
-colnames(wildfires_clean)
-wildfires_clean %>%
-  ggplot(aes(fire_size_class)) +
-  geom_bar() +
-  geom_text(
-    stat = "count",
-    aes(label = ..count..),
-    hjust = -0.5
-    ) +
-    coord_flip()
     
 #we can see that there is a clear mismatch in classes.
 #There are two options, subsampling and resampling.
@@ -268,34 +273,10 @@ wildfires_clean %>%
 wildfires_classification <- wildfires_clean %>%
   select(!c(fire_name, fire_size, latitude, longitude, putout_time,
             discovery_time, discovery_date, contained_time))
-wildfires_regression <- wildfires_clean %>%
-  select(!c(fire_name, fire_size_class, latitude, longitude,
-            putout_time, discovery_time, discovery_date, contained_time))
 
 
-#there are a lot of features that may be correlated
-#(such as temperature across days,
-#we will try and reduce dimensions by using PCA
-#to select only the most valuable features)
-
-
-colnames(wildfires_classification)
-wildfires_scaled <- scale(wildfires_classification[,-c(1:4, 6)])
-ggcorrplot(cor(wildfires_scaled[,-c(1:4, 6)]))
-#there's a fair bit of correlation between the temperature indicators, 
-#it might be worthwhile to remove them
-
-wildfires.pca <- PCA(wildfires_scaled[, -c(1:4, 6)], ncp = 18, graph = TRUE)
-fviz_contrib(wildfires.pca, choice = "var", axes = 1)
-
-fviz_pca_biplot(wildfires.pca,
-                col.ind = factor(wildfires_classification$fire_size_class))
-
-#from the plot, we can see wind_pre_15, 
-#hum_pre_7 and temp_cont are better predictors. 
-#We can remove the other temp variables for ease of statistical techniques
-#however, temp_cont has a lot of zeroes so we'll use temp_pre_30 as a proxy
-wildfires_final <- wildfires_classification[,-c(10,8,9,11,13,14,15,16,18,19,20,21)]
+wildfires_classification %>% colnames()
+wildfires_final <- wildfires_classification[,-c(8:10,12:14,16:18,20:22)]
 
 wildfires_final <- wildfires_final %>% mutate_if(is.numeric, scale)
 
@@ -327,7 +308,8 @@ rows <- c(
   nrow(classDs),
   nrow(classEs),
   nrow(classFs),
-  nrow(classGs))
+  nrow(classGs)
+  )
 
 minrows <- min(rows)
 
@@ -384,19 +366,18 @@ confusionMatrix(
 
 #Pretty low accuracy. Unimpressive. Let's try other models
 
-trctrl <- trainControl(method = "cv", number = 5)
+trctrl <- trainControl(method = "cv", number = 10)
 trgrid <- expand.grid(size = seq(from = 1, to = 10, by = 1),
                       decay = seq(from = 0.1, to = 0.5, by = 0.1))
 
 mod.nnet <- train(
-  fire_size_class ~ ., data = subsampled, 
+  fire_size_class ~ ., data = subsampled,
   method = "nnet",
   metric = "Accuracy",
   tuneGrid = trgrid,
   trControl = trctrl
   )
 
-mod.nnet$bestTune
 final.nnet <- nnet(
   fire_size_class ~ .,
   data = subsampled,
@@ -408,7 +389,8 @@ predict.nnet <- predict(final.nnet, newdata = data.te, type = "class")
 confusionMatrix(as.factor(predict.nnet), data.te$fire_size_class)
 
 #we can now try either random forests.
-#Since traditional methods aren't working, perhaps accuracy can be improved by random forests
+#Since traditional methods aren't working,
+#perhaps accuracy can be improved by random forests
 
 trGrid <- expand.grid(mtry = seq(from = 1, to = 10, by = 1))
 mod.rf <- train(
@@ -429,6 +411,124 @@ pred.rf <- predict(final.rf, newdata = data.te)
 
 confusionMatrix(as.factor(pred.rf), as.factor(data.te$fire_size_class))
 
+varImpPlot(final.rf)
+x_train <- select(subsampled, -fire_size_class)
+y_train <- pull(subsampled, fire_size_class)
+
+explainer_rf <- DALEX::explain(model = final.rf,
+                                data = x_train,
+                                y = y_train,
+                                label = "Random Forest")
+
+
+calculate_importance <- function(your_model_explainer, n_permutations = 10) {
+  imp <- model_parts(explainer = your_model_explainer,
+                     B = n_permutations,
+                     type = "ratio",
+                     N = NULL)
+  return(imp)
+}
+
+importance_rf <- calculate_importance(explainer_rf)
+
+library(ggplot2)
+plot(importance_rf) +
+  ggtitle("Mean variable-importance ratio over 10 permutations", "")
+
+#none of the models perform that well. However, we removed plenty of
+#important measures. Perhaps we should try to keep them and perform a dimension
+#reduction. Using the best model from before.
+
+wildfires.pca <- PCA(wildfires_scaled[, -c(1:4, 6)], ncp = 18, graph = TRUE)
+fviz_contrib(wildfires.pca, choice = "var", axes = 1:2)
+summary(wildfires.pca)
+fviz_pca_biplot(wildfires.pca,
+                col.ind = factor(wildfires_classification$fire_size_class))
+pca <- prcomp(wildfires_scaled[, -c(1:4, 6)])
+
+#the first four have 76% of variance. Let's use them
+dimension_reduced <- cbind(
+  fire_size_class = as.factor(wildfires_classification[, "fire_size_class"]),
+  pca$x[, 1:4]
+  ) %>%
+  as.data.frame()
+
+dimension_reduced$fire_size_class <- as.factor(
+  dimension_reduced$fire_size_class
+  )
+
+set.seed(20220531)
+index.tr <- createDataPartition(
+                y = dimension_reduced$fire_size_class,
+                p = 0.8,
+                list = FALSE
+                )
+                
+dim.tr <- dimension_reduced[index.tr,]
+dim.te <- dimension_reduced[-index.tr,]
+
+#now, we will subsample
+
+dimclassBs <- dim.tr %>% filter(fire_size_class == "1")
+dimclassCs <- dim.tr %>% filter(fire_size_class == "2")
+dimclassDs <- dim.tr %>% filter(fire_size_class == "3")
+dimclassEs <- dim.tr %>% filter(fire_size_class == "4")
+dimclassFs <- dim.tr %>% filter(fire_size_class == "5")
+dimclassGs <- dim.tr %>% filter(fire_size_class == "6")
+
+rows <- c(
+  nrow(dimclassBs),
+  nrow(dimclassCs),
+  nrow(dimclassDs),
+  nrow(dimclassEs),
+  nrow(dimclassFs),
+  nrow(dimclassGs)
+  )
+
+minrows <- min(rows)
+
+dimindexB <- sample(nrow(dimclassBs), size = minrows, replace = FALSE)
+dimindexC <- sample(nrow(dimclassCs), size = minrows, replace = FALSE)
+dimindexD <- sample(nrow(dimclassDs), size = minrows, replace = FALSE)
+dimindexF <- sample(nrow(dimclassFs), size = minrows, replace = FALSE)
+dimindexG <- sample(nrow(dimclassGs), size = minrows, replace = FALSE)
+
+dimred.tr <- data.frame(
+  rbind(dimclassEs,
+  dimclassBs[dimindexB, ],
+  dimclassCs[dimindexC, ],
+  dimclassDs[dimindexD, ],
+  dimclassFs[dimindexF, ],
+  dimclassGs[dimindexG, ])
+  )
+
+dimred.te %>% count(fire_size_class)
+
+trctrl <- trainControl(method = 'cv', number = 10)
+
+trgrid <- expand.grid(size = seq(from = 1, to = 10, by = 1),
+                      decay = seq(from = 0.1, to = 0.5, by = 0.1))
+
+dim.nn <- train(
+  fire_size_class ~ .,
+  data = dimred.tr,
+  method = "nnet",
+  tuneGrid = trgrid,
+  trControl = trctrl,
+  metric = "Accuracy"
+  )
+
+reduced.mod <- nnet(
+  fire_size_class ~ .,
+  data = dimred.tr,
+  size = dim.nn$bestTune[1,1],
+  decay = dim.nn$bestTune[2]
+  )
+
+reduced.pred <- predict(reduced.mod, newdata = dim.te, type = "class")
+
+confusionMatrix(as.factor(reduced.pred), as.factor(dim.te$fire_size_class))
+
 
 #the best model is NN but none of them perform well.
 #So now, we'll try and predict just two classes but use only NN
@@ -444,7 +544,7 @@ wildfires_classification$fire_size_class <-
 
 wildfires_classification <- droplevels(wildfires_classification)
 
-wildfires_reduced <- wildfires_classification[,-c(10,8,9,11,13,14,15,16,18,19,20,21)]
+wildfires_reduced <- wildfires_classification[,-c(8:10,12:14,16:18,20:22)]
 wildfires_reduced <- wildfires_classification %>% mutate_if(is.numeric, scale)
 str(wildfires_reduced)
 
@@ -457,11 +557,11 @@ classBCs <- data.tr.re %>% filter(fire_size_class == "BC")
 classDEs <- data.tr.re %>% filter(fire_size_class == "DE")
 classFGs <- data.tr.re %>% filter(fire_size_class == "FG")
 
-rows <- c(nrow(classBCs), nrow(classDEs), nrow(classFGs))
-minrows <- min(rows)
+reducedrows <- c(nrow(classBCs), nrow(classDEs), nrow(classFGs))
+reducedminrows <- min(reducedrows)
 
-indexBC <- sample(nrow(classBCs), size = minrows, replace = FALSE)
-indexFG <- sample(nrow(classFGs), size = minrows, replace = FALSE)
+indexBC <- sample(nrow(classBCs), size = reducedminrows, replace = FALSE)
+indexFG <- sample(nrow(classFGs), size = reducedminrows, replace = FALSE)
 
 reduced <- data.frame(rbind(classDEs, classBCs[indexBC, ], classFGs[indexFG, ]))
 
@@ -469,28 +569,33 @@ trctrl <- trainControl(method = 'cv', number = 10)
 trgrid <- expand.grid(size = seq(from = 1, to = 10, by = 1),
                       decay = seq(from = 0.1, to = 0.5, by = 0.1))
 
-mod.nnet <- train(
+reduced.nnet <- train(
   fire_size_class ~ ., data = reduced,
   method = 'nnet',
   metric = "Accuracy",
   tuneGrid = trgrid,
   trControl = trctrl
   )
-mod.nnet$bestTune
 
-final.nnet <- nnet(
+final.reduced.nnet <- nnet(
   fire_size_class ~ ., data = reduced,
-  size = mod.nnet$bestTune[1,1],
-  decay = mod.nnet$bestTune[2])
+  size = reduced.nnet$bestTune[1,1],
+  decay = reduced.nnet$bestTune[2])
 
-predict.nnet <- predict(final.nnet, newdata = data.te.re, type = "class")
-confusionMatrix(as.factor(predict.nnet), data.te.re$fire_size_class)
+finalpredict.nnet <- predict(
+  final.reduced.nnet,
+  newdata = data.te.re,
+  type = "class"
+  )
 
-#fairly decent, not good enough
+confusionMatrix(as.factor(finalpredict.nnet), data.te.re$fire_size_class)
 
 #in short, we can conclude that alone, temperature, vegetation, remoteness and state are not good enough for a triage.
 #We need more data to fit the model better. Some surprising learnings : vegetation does not seem to matter for fire_size_class prediction
 #temperature in the past 30 days and precipitation also don't have an impact.
 #research indicates that droughts are the biggest predictors so instead of precipitation in the last 30, maybe we need to go further backwards
+
+
+
 
 
