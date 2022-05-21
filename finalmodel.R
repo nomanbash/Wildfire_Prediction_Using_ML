@@ -207,10 +207,6 @@ wildfires_clean %>%
   ggpairs()
 
 
-colnames(wildfires_classification)
-wildfires_scaled <- scale(wildfires_classification[,-c(1:4, 6)])
-ggcorrplot(cor(wildfires_scaled[,-c(1:4, 6)]))
-
 wildfires_clean %>%
   ggplot() +
     geom_density(aes(x = Temp_pre_30), color = "red") +
@@ -229,8 +225,13 @@ wildfires_clean %>%
     labs(title = "Comparison of Wind Values", x = "Wind")
 
 wildfires_clean %>%
-  ggplot()
-    geom_point(aes(x = remoteness, y = fire_size))
+  ggplot() +
+    geom_smooth(aes(x = remoteness, y = fire_size)) +
+    labs(
+      title = "Correlation between Remoteness and Fire Size",
+      x = "Remoteness",
+      y = "Fire Size"
+    )
 
 
 # full lat/long map of all fires
@@ -279,6 +280,10 @@ wildfires_classification %>% colnames()
 wildfires_final <- wildfires_classification[,-c(8:10,12:14,16:18,20:22)]
 
 wildfires_final <- wildfires_final %>% mutate_if(is.numeric, scale)
+
+colnames(wildfires_classification)
+wildfires_scaled <- scale(wildfires_classification[,-c(1:4, 6)])
+ggcorrplot(cor(wildfires_scaled[,-c(1:4, 6)]))
 
 #dividing into training and test sets
 
@@ -340,7 +345,7 @@ data.te$fire_size_class
 #KNN
 
 trctrl <- trainControl(method = "cv", number = 10)
-trgrid <- expand.grid(k = seq(from = 1, to = 15, by = 1))
+trgrid <- expand.grid(k = seq(from = 1, to = 10, by = 1))
 
 mod.knn.cv <- train(
   fire_size_class ~ .,
@@ -354,15 +359,21 @@ mod.knn.cv <- train(
 final.knn <- knn3(
   data = subsampled,
   fire_size_class ~ .,
-  k = mod.knn.cv$bestTune)
+  k = 5)
 
 final.predict.knn <- predict(final.knn, newdata = data.te, type = "class")
 
+#test accuracy
 confusionMatrix(
   as.factor(final.predict.knn),
   as.factor(data.te$fire_size_class)
   )
 
+#training accuracy
+confusionMatrix(
+  as.factor(predict(final.knn, newdata = subsampled, type = "class")),
+  as.factor(subsampled$fire_size_class)
+  )
 
 #Pretty low accuracy. Unimpressive. Let's try other models
 
@@ -387,6 +398,11 @@ final.nnet <- nnet(
 predict.nnet <- predict(final.nnet, newdata = data.te, type = "class")
 
 confusionMatrix(as.factor(predict.nnet), data.te$fire_size_class)
+summary(final.nnet)
+
+#training accuracy
+confusionMatrix(as.factor(predict(final.nnet, newdata = subsampled, type = "class")), 
+  as.factor(subsampled$fire_size_class))
 
 #we can now try either random forests.
 #Since traditional methods aren't working,
@@ -408,6 +424,7 @@ final.rf <- randomForest(fire_size_class ~ .,
   )
 
 pred.rf <- predict(final.rf, newdata = data.te)
+tred.rf <- predict(final.rf, newdata = subsampled)
 
 confusionMatrix(as.factor(pred.rf), as.factor(data.te$fire_size_class))
 
@@ -431,7 +448,6 @@ calculate_importance <- function(your_model_explainer, n_permutations = 10) {
 
 importance_rf <- calculate_importance(explainer_rf)
 
-library(ggplot2)
 plot(importance_rf) +
   ggtitle("Mean variable-importance ratio over 10 permutations", "")
 
@@ -449,12 +465,24 @@ pca <- prcomp(wildfires_scaled[, -c(1:4, 6)])
 #the first four have 76% of variance. Let's use them
 dimension_reduced <- cbind(
   fire_size_class = as.factor(wildfires_classification[, "fire_size_class"]),
+  stat_cause_descr = wildfires_classification$stat_cause_descr,
+  discovery_month = wildfires_classification$discovery_month,
+  state = wildfires_classification$state,
   pca$x[, 1:4]
   ) %>%
   as.data.frame()
 
 dimension_reduced$fire_size_class <- as.factor(
   dimension_reduced$fire_size_class
+  )
+dimension_reduced$stat_cause_descr <- as.factor(
+  dimension_reduced$stat_cause_descr
+  )
+dimension_reduced$discovery_month <- as.factor(
+  dimension_reduced$discovery_month
+  )
+dimension_reduced$state <- as.factor(
+  dimension_reduced$state
   )
 
 set.seed(20220531)
@@ -526,12 +554,22 @@ reduced.mod <- nnet(
   )
 
 reduced.pred <- predict(reduced.mod, newdata = dim.te, type = "class")
+reduced.trainpred <- predict(reduced.mod, newdata = dimred.tr, type ="class")
 
 confusionMatrix(as.factor(reduced.pred), as.factor(dim.te$fire_size_class))
 
+#train accuracy
+confusionMatrix(as.factor(reduced.trainpred), as.factor(dimred.tr$fire_size_class))
 
 #the best model is NN but none of them perform well.
 #So now, we'll try and predict just two classes but use only NN
+
+
+wildfires_clean %>%
+  ggplot() +
+  geom_boxplot(aes(x = fire_size_class, y = log(fire_size)))
+
+
 
 #merging classes
 wildfires_classification$fire_size_class <-
@@ -588,7 +626,16 @@ finalpredict.nnet <- predict(
   type = "class"
   )
 
+finaltrpredict.nnet <- predict(
+  final.reduced.nnet,
+  newdata = reduced,
+  type = "class"
+)
+
 confusionMatrix(as.factor(finalpredict.nnet), data.te.re$fire_size_class)
+
+#training accuracy
+confusionMatrix(as.factor(finaltrpredict.nnet), reduced$fire_size_class)
 
 #in short, we can conclude that alone, temperature, vegetation, remoteness and state are not good enough for a triage.
 #We need more data to fit the model better. Some surprising learnings : vegetation does not seem to matter for fire_size_class prediction
