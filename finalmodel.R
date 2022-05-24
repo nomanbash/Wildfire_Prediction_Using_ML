@@ -381,6 +381,30 @@ confusionMatrix(
   as.factor(subsampled$fire_size_class)
   )
 
+#varimp
+x_train_knn <- select(subsampled, -fire_size_class)
+y_train_knn <- pull(subsampled, fire_size_class)
+
+explainer_knn <- DALEX::explain(model = final.knn,
+                               data = x_train_knn,
+                               y = y_train_knn,
+                               label = "KNN",
+                               type = "multiclass")
+
+
+calculate_importance <- function(your_model_explainer, n_permutations = 10) {
+  imp <- model_parts(explainer = your_model_explainer,
+                     B = n_permutations,
+                     type = "ratio",
+                     N = NULL)
+  return(imp)
+}
+
+importance_knn <- calculate_importance(explainer_knn)
+
+plot(importance_knn) +
+  ggtitle("Mean variable-importance ratio over 10 permutations", "")
+
 #Pretty low accuracy. Unimpressive. Let's try other models
 
 ##NNET
@@ -452,7 +476,6 @@ calculate_importance <- function(your_model_explainer, n_permutations = 10) {
   imp <- model_parts(explainer = your_model_explainer,
                      B = n_permutations,
                      type = "ratio",
-                     loss_function = loss_cross_entropy,
                      N = NULL)
   return(imp)
 }
@@ -463,28 +486,7 @@ importance_rf <- calculate_importance(explainer_rf)
 plot(importance_rf) +
   ggtitle("Mean variable-importance ratio over 10 permutations", "")
 
-#Other Variable Importance
-#KNN
-explainer_knn <- DALEX::explain(model = final.knn,
-                               data = x_train,
-                               y = y_train,
-                               label = "KNN")
-
-importance_knn <- calculate_importance(explainer_knn)
-plot(importance_knn) +
-  ggtitle("Mean variable-importance ratio over 10 permutations", "")
-#NN
-explainer_nn <- DALEX::explain(model = final.nnet,
-                                data = x_train,
-                                y = y_train,
-                                label = "NN")
-
-importance_nn <- calculate_importance(explainer_nn)
-plot(importance_nn) +
-  ggtitle("Mean variable-importance ratio over 10 permutations", "")
-
-
-#none of the models perform that well. However, we removed plenty of
+  #none of the models perform that well. However, we removed plenty of
 #important measures. Perhaps we should try to keep them and perform a dimension
 #reduction. Using the best model from before.
 
@@ -668,7 +670,8 @@ reduced.nnet <- train(
 final.reduced.nnet <- nnet(
   fire_size_class ~ ., data = reduced,
   size = reduced.nnet$bestTune[1,1],
-  decay = reduced.nnet$bestTune[2])
+  decay = reduced.nnet$bestTune[2],
+  importance = TRUE)
 
 finalpredict.nnet <- predict(
   final.reduced.nnet,
@@ -687,24 +690,22 @@ confusionMatrix(as.factor(finalpredict.nnet), data.te.re$fire_size_class)
 #training accuracy
 confusionMatrix(as.factor(finaltrpredict.nnet), reduced$fire_size_class)
 
-#VarImp
-#Creating an explain object
-explainer_fianl_nn <- DALEX::explain(model = final.reduced.nnet, 
-                               data = reduced[,-1], 
-                               y = reduced$fire_size_class,
-                               label = "Neural Network")
+x_train_nnet <- select(reduced, -fire_size_class)
+y_train_nnet <- pull(reduced, fire_size_class)
 
-#Plotting the variable importance
-importance_final_nn <- calculate_importance(explainer_fianl_nn)
-plot(importance_final_nn) +
+explainer_finalnn <- DALEX::explain(model = final.reduced.nnet,
+                               data = x_train_nnet,
+                               y = y_train_nnet,
+                               label = "Final Neural Net",
+                               type = "multiclass")
+
+importance_finalnnet <- calculate_importance(explainer_finalnn)
+
+#plotting varimp
+plot(importance_finalnnet) +
   ggtitle("Mean variable-importance ratio over 10 permutations", "")
 
 #in short, we can conclude that alone, temperature, vegetation, remoteness and state are not good enough for a triage.
 #We need more data to fit the model better. Some surprising learnings : vegetation does not seem to matter for fire_size_class prediction
 #temperature in the past 30 days and precipitation also don't have an impact.
 #research indicates that droughts are the biggest predictors so instead of precipitation in the last 30, maybe we need to go further backwards
-
-
-
-
-
